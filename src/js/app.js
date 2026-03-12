@@ -35,6 +35,7 @@ class PDFOffApp {
     this.setupMenubar();
     this.setupKeyboardShortcuts();
     this.setupDragAndDrop();
+    this.setupScrollZoom();
     this.setupDialogs();
   }
 
@@ -204,12 +205,7 @@ class PDFOffApp {
   }
 
   async onZoomChanged() {
-    const zoomSelect = document.getElementById('zoom-select');
-    const zoomStr = this.zoom.toFixed(2);
-    const option = Array.from(zoomSelect.options).find(o => parseFloat(o.value).toFixed(2) === zoomStr);
-    if (option) {
-      zoomSelect.value = option.value;
-    }
+    document.getElementById('zoom-input').value = Math.round(this.zoom * 100) + '%';
     await this.viewer.renderCurrentPage();
     this.statusbar.update();
   }
@@ -379,6 +375,32 @@ class PDFOffApp {
         }
       }
     });
+  }
+
+  // ── Ctrl + Wheel Zoom ──
+
+  setupScrollZoom() {
+    const viewer = document.getElementById('viewer');
+    let _zoomTimer = null;
+
+    viewer.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey || !this.isDocumentOpen) return;
+      e.preventDefault();
+
+      const delta = e.deltaY < 0 ? 0.05 : -0.05;
+      this.zoom = Math.min(5.0, Math.max(0.1, this.zoom + delta));
+
+      // Update zoom display immediately
+      document.getElementById('zoom-input').value = Math.round(this.zoom * 100) + '%';
+
+      // Debounce the backend call + re-render so rapid scrolling stays smooth
+      clearTimeout(_zoomTimer);
+      _zoomTimer = setTimeout(async () => {
+        this.zoom = await invoke('set_zoom', { level: this.zoom });
+        await this.viewer.renderCurrentPage();
+        this.statusbar.update();
+      }, 120);
+    }, { passive: false });
   }
 
   // ── Drag and Drop ──

@@ -26,10 +26,23 @@ export class Toolbar {
       invoke('set_fit_mode', { mode: 'fit-page' });
     });
 
-    // Zoom select
-    document.getElementById('zoom-select').addEventListener('change', (e) => {
-      this.app.setZoom(parseFloat(e.target.value));
+    // Zoom input — commit on Enter or blur
+    const zoomInput = document.getElementById('zoom-input');
+    const applyZoomInput = () => {
+      const raw = zoomInput.value.replace('%', '').trim();
+      const pct = parseFloat(raw);
+      if (!isNaN(pct) && pct >= 10 && pct <= 500) {
+        this.app.setZoom(pct / 100);
+      } else {
+        // Revert to current zoom
+        zoomInput.value = Math.round(this.app.zoom * 100) + '%';
+      }
+    };
+    zoomInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); zoomInput.blur(); }
+      if (e.key === 'Escape') { zoomInput.value = Math.round(this.app.zoom * 100) + '%'; zoomInput.blur(); }
     });
+    zoomInput.addEventListener('blur', applyZoomInput);
 
     // Page input
     const pageInput = document.getElementById('page-input');

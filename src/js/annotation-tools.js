@@ -97,6 +97,13 @@ export class AnnotationTools {
         points.push({ x, y });
         ctx.lineTo(x, y);
         ctx.stroke();
+      } else if (this.activeTool === 'highlight') {
+        // Draw preview rectangle
+        ctx.clearRect(0, 0, newCanvas.width, newCanvas.height);
+        const sx = points[0].x;
+        const sy = points[0].y;
+        ctx.fillStyle = `rgba(255, 255, 0, 0.35)`;
+        ctx.fillRect(sx, sy, x - sx, y - sy);
       }
     });
 
@@ -129,22 +136,28 @@ export class AnnotationTools {
     const zoom = this.app.zoom;
     const dpiScale = zoom * 144 / 72;
 
+    // PDF coordinates: origin is bottom-left; canvas origin is top-left — flip Y
+    const pageHeightPx = canvas.height;
+    const pdfX = x / dpiScale;
+    const pdfY = (pageHeightPx - y - height) / dpiScale;
+    const pdfW = width / dpiScale;
+    const pdfH = height / dpiScale;
+
     try {
       await invoke('create_annotation', {
         request: {
           page_index: pageIndex,
           annotation_type: 'Highlight',
-          rect: {
-            x: x / dpiScale,
-            y: y / dpiScale,
-            width: width / dpiScale,
-            height: height / dpiScale,
-          },
+          rect: { x: pdfX, y: pdfY, width: pdfW, height: pdfH },
           content: '',
           color: this.highlightColor,
           ink_strokes: null,
         },
       });
+      // Clear the canvas preview and re-render the page so the annotation appears
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      await this.app.viewer.renderCurrentPage();
       this.app.updateDirtyState();
     } catch (err) {
       console.error('Failed to create highlight:', err);
@@ -183,8 +196,9 @@ export class AnnotationTools {
   async saveInkAnnotation(pageIndex, points, canvas) {
     const zoom = this.app.zoom;
     const dpiScale = zoom * 144 / 72;
+    const pageHeightPx = canvas.height;
 
-    // Calculate bounding rect
+    // Calculate bounding rect in canvas pixels
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const p of points) {
       minX = Math.min(minX, p.x);
@@ -193,7 +207,10 @@ export class AnnotationTools {
       maxY = Math.max(maxY, p.y);
     }
 
-    const scaledPoints = points.map(p => [p.x / dpiScale, p.y / dpiScale]);
+    // PDF coordinates: flip Y (origin is bottom-left in PDF)
+    const scaledPoints = points.map(p => [p.x / dpiScale, (pageHeightPx - p.y) / dpiScale]);
+    const pdfMinX = minX / dpiScale;
+    const pdfMinY = (pageHeightPx - maxY) / dpiScale;
 
     try {
       await invoke('create_annotation', {
@@ -201,8 +218,8 @@ export class AnnotationTools {
           page_index: pageIndex,
           annotation_type: 'FreehandInk',
           rect: {
-            x: minX / dpiScale,
-            y: minY / dpiScale,
+            x: pdfMinX,
+            y: pdfMinY,
             width: (maxX - minX) / dpiScale,
             height: (maxY - minY) / dpiScale,
           },
@@ -215,6 +232,9 @@ export class AnnotationTools {
           }],
         },
       });
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      await this.app.viewer.renderCurrentPage();
       this.app.updateDirtyState();
     } catch (err) {
       console.error('Failed to save ink annotation:', err);

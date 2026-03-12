@@ -207,15 +207,23 @@ body {
   border-color: var(--accent);
 }
 
-#zoom-select {
+#zoom-input {
   height: 24px;
+  width: 58px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   font-size: 12px;
   font-family: var(--font-family);
   background: var(--bg-secondary);
   padding: 0 4px;
-  cursor: pointer;
+  text-align: center;
+  cursor: text;
+}
+
+#zoom-input:focus {
+  outline: none;
+  border-color: var(--accent-color, #0078d4);
+  background: white;
 }
 
 /* ── Main Content Area ── */
