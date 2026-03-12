@@ -1,0 +1,5 @@
+# Project-level Cargo configuration
+# Sets LIBCLANG_PATH for mupdf-sys 0.6 bindgen on Windows
+
+[env]
+LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"

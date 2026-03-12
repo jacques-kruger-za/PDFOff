@@ -72,7 +72,8 @@ impl FormHandler {
                     .load_page(page_idx as i32)
                     .map_err(|e| PdfOffError::FormError(e.to_string()))?;
 
-                let pdf_page = PdfPage::from(page);
+                let pdf_page = PdfPage::try_from(page)
+                    .map_err(|e| PdfOffError::FormError(e.to_string()))?;
 
                 // Use page bounds as field rect since PdfAnnotation has no rect()
                 let page_bounds = pdf_page.bounds().unwrap_or(mupdf::Rect {

@@ -92,7 +92,8 @@ impl AnnotationHandler {
                     .load_page(page_idx as i32)
                     .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
-                let pdf_page = PdfPage::from(page);
+                let pdf_page = PdfPage::try_from(page)
+                    .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
                 for (idx, annot) in pdf_page.annotations().enumerate() {
                     let annot_type = match annot.r#type() {
@@ -173,7 +174,8 @@ impl AnnotationHandler {
                 .load_page(request.page_index as i32)
                 .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
-            let mut pdf_page = PdfPage::from(page);
+            let mut pdf_page = PdfPage::try_from(page)
+                .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
             let annot_type = match request.annotation_type {
                 AnnotationType::Highlight => mupdf::pdf::PdfAnnotationType::Highlight,
@@ -220,7 +222,8 @@ impl AnnotationHandler {
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
-            let mut pdf_page = PdfPage::from(page);
+            let mut pdf_page = PdfPage::try_from(page)
+                .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
             let annot = pdf_page.annotations().nth(annotation_index).ok_or_else(|| {
                 PdfOffError::AnnotationError(format!(

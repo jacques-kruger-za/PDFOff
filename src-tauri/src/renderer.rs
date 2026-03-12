@@ -72,7 +72,7 @@ impl Renderer {
             let matrix = Matrix::new_scale(scale, scale);
 
             let pixmap = page
-                .to_pixmap(&matrix, &Colorspace::device_rgb(), 1.0, true)
+                .to_pixmap(&matrix, &Colorspace::device_rgb(), false, true)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
             let mut png_data = Vec::new();
@@ -142,7 +142,7 @@ impl Renderer {
             let matrix = Matrix::new_scale(scale, scale);
 
             let pixmap = page
-                .to_pixmap(&matrix, &Colorspace::device_rgb(), 1.0, true)
+                .to_pixmap(&matrix, &Colorspace::device_rgb(), false, true)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
             let mut png_data = Vec::new();
@@ -185,7 +185,7 @@ impl Renderer {
             let matrix = Matrix::new_scale(scale, scale);
 
             let pixmap = page
-                .to_pixmap(&matrix, &Colorspace::device_rgb(), 1.0, true)
+                .to_pixmap(&matrix, &Colorspace::device_rgb(), false, true)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
             let mut png_data = Vec::new();

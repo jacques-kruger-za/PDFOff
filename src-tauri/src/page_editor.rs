@@ -137,7 +137,8 @@ impl PageEditor {
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
 
-            let mut pdf_page = PdfPage::from(page);
+            let mut pdf_page = PdfPage::try_from(page)
+                .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
 
             let current_rotation = pdf_page
                 .rotation()
@@ -357,7 +358,8 @@ impl PageEditor {
                         .doc()
                         .load_page(*page_index as i32)
                         .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
-                    let mut pdf_page = PdfPage::from(page);
+                    let mut pdf_page = PdfPage::try_from(page)
+                        .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
                     let current = pdf_page
                         .rotation()
                         .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
