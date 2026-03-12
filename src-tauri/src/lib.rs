@@ -180,6 +180,35 @@ fn prepare_print(
     Ok(base64_pages)
 }
 
+#[tauri::command]
+fn get_printers() -> (Vec<String>, Option<String>) {
+    Printer::enumerate_printers()
+}
+
+#[tauri::command]
+fn execute_print(
+    state: State<'_, AppState>,
+    printer_name: String,
+    pages: Vec<u32>,
+    copies: u32,
+    dpi: f32,
+) -> Result<(), PdfOffError> {
+    let title = state
+        .doc_manager
+        .with_document(|doc| Ok(doc.metadata.file_name.clone()))
+        .unwrap_or_else(|_| "PDFOff Document".to_string());
+
+    Printer::execute_print(
+        &printer_name,
+        &pages,
+        copies,
+        &state.doc_manager,
+        &state.renderer,
+        dpi,
+        &title,
+    )
+}
+
 // ── Phase 3: Forms ──
 
 #[tauri::command]
@@ -405,6 +434,8 @@ pub fn run() {
             // Phase 2: Printing
             parse_print_range,
             prepare_print,
+            get_printers,
+            execute_print,
             // Phase 3: Forms
             get_form_fields,
             set_form_field,

@@ -20,7 +20,7 @@ pub enum FitMode {
 
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 5.0;
-const ZOOM_STEP: f32 = 0.25;
+const ZOOM_STEP: f32 = 0.10;
 
 pub struct Navigator {
     current_page: std::sync::Mutex<u32>,

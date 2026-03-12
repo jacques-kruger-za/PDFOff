@@ -196,6 +196,40 @@ impl Renderer {
         })
     }
 
+    /// Render a page to raw RGB bytes (3 bytes/pixel) for native GDI printing.
+    pub fn render_for_print_raw(
+        &self,
+        doc_manager: &DocumentManager,
+        page_index: u32,
+        dpi: f32,
+    ) -> Result<(Vec<u8>, u32, u32)> {
+        doc_manager.with_document(|doc| {
+            if page_index >= doc.metadata.page_count {
+                return Err(PdfOffError::InvalidPage(
+                    page_index,
+                    doc.metadata.page_count,
+                ));
+            }
+
+            let page = doc
+                .doc()
+                .load_page(page_index as i32)
+                .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
+
+            let scale = dpi / PDF_DPI;
+            let matrix = Matrix::new_scale(scale, scale);
+
+            let pixmap = page
+                .to_pixmap(&matrix, &Colorspace::device_rgb(), false, true)
+                .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
+
+            let width = pixmap.width();
+            let height = pixmap.height();
+            let samples = pixmap.samples().to_vec();
+            Ok((samples, width, height))
+        })
+    }
+
     pub fn invalidate_cache(&self) {
         self.cache.lock().unwrap().clear();
     }

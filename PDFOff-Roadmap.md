@@ -118,7 +118,37 @@ Commercial PDF readers (Adobe Acrobat, Foxit, etc.) are bloated, slow, and incre
 
 ---
 
-## 4. Feature Roadmap
+## 4. Known Issues
+
+> Tracked as of 2026-03-12. Status: 🔴 Broken · 🟡 Partial · 🟢 Working · 🔧 In Progress
+
+### Phase 1 — Viewer
+
+| # | Issue | Status | Notes |
+|---|-------|--------|-------|
+| V-1 | Ctrl+wheel zoom re-renders all pages, losing scroll position | 🟡 Partial | Zoom value changes correctly; UX is jarring. Needs smarter re-render that preserves scroll. |
+| V-2 | Zoom dropdown doesn't reflect Ctrl+wheel values | 🟡 Partial | Dropdown has preset steps (50%, 75%, 100%…); freeform values from wheel won't match. Minor visual issue. |
+| V-3 | +/− buttons use 10% steps but don't align with dropdown presets | 🟡 Partial | ZOOM_STEP changed to 0.10. Dropdown options are at fixed values; off-step zooms show blank selection. |
+
+### Phase 2 — Print
+
+| # | Issue | Status | Notes |
+|---|-------|--------|-------|
+| P-1 | Print dialog is custom HTML — no native Windows printer selection | 🔴 Broken | `executePrint()` calls `prepare_print` which renders pages to bitmaps but never submits a print job. No `windows-rs` integration exists. Needs complete rework. |
+| P-2 | No actual print job submission | 🔴 Broken | `Printer::prepare_print_data()` returns rendered page bytes but nothing is passed to a Windows print spooler. Print effectively does nothing. |
+
+### Phase 4 — Annotations
+
+| # | Issue | Status | Notes |
+|---|-------|--------|-------|
+| A-1 | Highlight annotation rect/color now set on MuPDF object | 🔧 In Progress | Rust fix applied (2026-03-12) — awaiting test. Previously `_annot` was dropped unused. |
+| A-2 | Highlight may not render — PDF Highlight type requires QuadPoints | 🟡 Partial | mupdf 0.6 has no `set_quad_points()`. Without quad points, Highlight annotations may render as invisible in some viewers. May need to use FreeText/Square annotation as fallback. |
+| A-3 | Sticky note content stored as author field only | 🟡 Partial | `set_author()` used as workaround; no `set_contents()` in mupdf 0.6. Note text won't show in other readers. |
+| A-4 | Freehand ink Y-coordinate not flipped | 🔴 Broken | Same PDF bottom-left origin issue as highlight; ink strokes will appear mirrored vertically. |
+
+---
+
+## 5. Feature Roadmap
 
 ### Phase 1 — View & Read (v0.1) ★ MVP
 

@@ -1,5 +1,6 @@
 use crate::document::DocumentManager;
 use crate::error::{PdfOffError, Result};
+use mupdf::color::AnnotationColor as MupdfAnnotationColor;
 use mupdf::pdf::PdfPage;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -186,9 +187,31 @@ impl AnnotationHandler {
                 AnnotationType::TextBox => mupdf::pdf::PdfAnnotationType::FreeText,
             };
 
-            let _annot = pdf_page
+            let mut annot = pdf_page
                 .create_annotation(annot_type)
                 .map_err(|e: mupdf::Error| PdfOffError::AnnotationError(e.to_string()))?;
+
+            // Apply rect
+            let r = &request.rect;
+            let _ = annot.set_rect(mupdf::Rect {
+                x0: r.x,
+                y0: r.y,
+                x1: r.x + r.width,
+                y1: r.y + r.height,
+            });
+
+            // Apply color
+            let c = &request.color;
+            let _ = annot.set_color(MupdfAnnotationColor::Rgb {
+                red: c.r,
+                green: c.g,
+                blue: c.b,
+            });
+
+            // Apply content as author field (used for sticky notes)
+            if !request.content.is_empty() {
+                let _ = annot.set_author(&request.content);
+            }
 
             let id = uuid::Uuid::new_v4().to_string();
             doc.is_dirty = true;

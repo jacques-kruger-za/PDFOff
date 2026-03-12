@@ -477,6 +477,16 @@ class PDFOffApp {
 
   showPrintDialog() {
     if (!this.isDocumentOpen) return;
+    invoke('get_printers').then(([printers, defaultPrinter]) => {
+      const sel = document.getElementById('print-printer');
+      if (sel) {
+        sel.innerHTML = printers.length
+          ? printers.map(p =>
+              `<option value="${p}"${p === defaultPrinter ? ' selected' : ''}>${p}</option>`
+            ).join('')
+          : '<option value="">No printers found</option>';
+      }
+    }).catch(() => {});
     document.getElementById('print-dialog').style.display = 'flex';
   }
 
@@ -489,36 +499,31 @@ class PDFOffApp {
   }
 
   async executePrint() {
-    try {
-      const rangeType = document.getElementById('print-range-type').value;
-      const dpi = parseFloat(document.getElementById('print-dpi').value);
-      const copies = parseInt(document.getElementById('print-copies').value, 10);
-      const scaling = document.getElementById('print-scaling').value;
+    const printerName = document.getElementById('print-printer')?.value;
+    if (!printerName) {
+      this.showError('No printer selected.');
+      return;
+    }
 
-      let pageRange;
+    const rangeType = document.getElementById('print-range-type').value;
+    const dpi = parseFloat(document.getElementById('print-dpi').value) || 300;
+    const copies = parseInt(document.getElementById('print-copies').value, 10) || 1;
+
+    let pages;
+    try {
       if (rangeType === 'all') {
-        pageRange = { All: null };
+        pages = Array.from({ length: this.metadata.page_count }, (_, i) => i);
       } else if (rangeType === 'current') {
-        pageRange = { Current: this.currentPage };
+        pages = [this.currentPage];
       } else {
-        const rangeStr = document.getElementById('print-range-custom').value;
-        const pages = await invoke('parse_print_range', {
+        const rangeStr = document.getElementById('print-range-custom').value.trim();
+        pages = await invoke('parse_print_range', {
           rangeStr,
           totalPages: this.metadata.page_count,
         });
-        pageRange = { Custom: pages };
       }
 
-      const settings = {
-        page_range: pageRange,
-        copies,
-        dpi,
-        scaling: scaling === 'fit' ? 'FitToPage' : 'ActualSize',
-        orientation: 'Auto',
-        collate: true,
-      };
-
-      await invoke('prepare_print', { settings });
+      await invoke('execute_print', { printerName, pages, copies, dpi });
       document.getElementById('print-dialog').style.display = 'none';
     } catch (err) {
       console.error('Print failed:', err);

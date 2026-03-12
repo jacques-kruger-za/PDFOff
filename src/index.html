@@ -160,6 +160,12 @@
     <div class="modal-content">
       <h2>Print</h2>
       <div class="form-group">
+        <label>Printer:</label>
+        <select id="print-printer">
+          <option value="">Loading printers…</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label>Page Range:</label>
         <select id="print-range-type">
           <option value="all">All Pages</option>
@@ -173,18 +179,11 @@
         <input type="number" id="print-copies" min="1" value="1" />
       </div>
       <div class="form-group">
-        <label>DPI:</label>
+        <label>Quality:</label>
         <select id="print-dpi">
-          <option value="150">150 DPI (Draft)</option>
-          <option value="300" selected>300 DPI (Normal)</option>
-          <option value="600">600 DPI (High Quality)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Scaling:</label>
-        <select id="print-scaling">
-          <option value="fit">Fit to Page</option>
-          <option value="actual">Actual Size</option>
+          <option value="150">Draft (150 DPI)</option>
+          <option value="300" selected>Normal (300 DPI)</option>
+          <option value="600">High (600 DPI)</option>
         </select>
       </div>
       <div class="modal-actions">

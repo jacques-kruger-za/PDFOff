@@ -86,7 +86,7 @@ impl Printer {
                 }
 
                 for p in start..=end {
-                    pages.push(p - 1); // Convert to 0-indexed
+                    pages.push(p - 1);
                 }
             } else {
                 let page: u32 = part
@@ -149,13 +149,249 @@ impl Printer {
     ) -> Result<Vec<Vec<u8>>> {
         let pages = self.get_pages_for_range(doc_manager, &settings.page_range)?;
         let mut print_data = Vec::new();
-
         for page_index in pages {
             let data = renderer.render_for_print(doc_manager, page_index, settings.dpi)?;
             print_data.push(data);
         }
-
         Ok(print_data)
+    }
+
+    /// Enumerate installed printers. Returns (names, default_printer_name).
+    #[cfg(windows)]
+    pub fn enumerate_printers() -> (Vec<String>, Option<String>) {
+        use windows::Win32::Graphics::Printing::{
+            EnumPrintersW, GetDefaultPrinterW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL,
+            PRINTER_INFO_4W,
+        };
+        use windows::core::PWSTR;
+
+        // Get default printer
+        let default = {
+            let mut size: u32 = 512;
+            let mut buf: Vec<u16> = vec![0u16; size as usize];
+            unsafe {
+                if GetDefaultPrinterW(PWSTR(buf.as_mut_ptr()), &mut size).as_bool() {
+                    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                    Some(String::from_utf16_lossy(&buf[..end]).to_string())
+                } else {
+                    None
+                }
+            }
+        };
+
+        // Enumerate printers
+        let mut needed: u32 = 0;
+        let mut returned: u32 = 0;
+        unsafe {
+            let _ = EnumPrintersW(
+                PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
+                PWSTR::null(),
+                4,
+                None,
+                &mut needed,
+                &mut returned,
+            );
+        }
+
+        if needed == 0 {
+            return (Vec::new(), default);
+        }
+
+        let mut buf: Vec<u8> = vec![0u8; needed as usize];
+        unsafe {
+            if EnumPrintersW(
+                PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
+                PWSTR::null(),
+                4,
+                Some(&mut buf),
+                &mut needed,
+                &mut returned,
+            )
+            .is_err()
+            {
+                return (Vec::new(), default);
+            }
+        }
+
+        let info_size = std::mem::size_of::<PRINTER_INFO_4W>();
+        let names: Vec<String> = (0..returned as usize)
+            .filter_map(|i| {
+                let info: &PRINTER_INFO_4W = unsafe {
+                    &*(buf.as_ptr().add(i * info_size) as *const PRINTER_INFO_4W)
+                };
+                let name = unsafe { info.pPrinterName.to_string().ok()? };
+                if name.is_empty() { None } else { Some(name) }
+            })
+            .collect();
+
+        (names, default)
+    }
+
+    #[cfg(not(windows))]
+    pub fn enumerate_printers() -> (Vec<String>, Option<String>) {
+        (Vec::new(), None)
+    }
+
+    /// Submit a print job using native Windows GDI.
+    #[cfg(windows)]
+    pub fn execute_print(
+        printer_name: &str,
+        pages: &[u32],
+        copies: u32,
+        doc_manager: &DocumentManager,
+        renderer: &Renderer,
+        dpi: f32,
+        doc_title: &str,
+    ) -> Result<()> {
+        use std::iter::once;
+        use windows::Win32::Graphics::Gdi::{
+            CreateDCW, DeleteDC, GetDeviceCaps, StretchDIBits, BITMAPINFOHEADER, BI_RGB,
+            DIB_RGB_COLORS, PHYSICALHEIGHT, PHYSICALOFFSETX, PHYSICALOFFSETY, PHYSICALWIDTH,
+            SRCCOPY,
+        };
+        use windows::Win32::Graphics::Gdi::HDC;
+        use windows::core::PCWSTR;
+
+        // GDI print functions — not exposed in windows 0.58 module structure,
+        // declared directly via FFI (all in gdi32.dll, wingdi.h)
+        #[repr(C)]
+        struct DocInfoW {
+            cb_size: i32,
+            psz_doc_name: *const u16,
+            psz_output: *const u16,
+            psz_datatype: *const u16,
+            fw_type: u32,
+        }
+        extern "system" {
+            fn StartDocW(hdc: HDC, lpdi: *const DocInfoW) -> i32;
+            fn StartPage(hdc: HDC) -> i32;
+            fn EndPage(hdc: HDC) -> i32;
+            fn EndDoc(hdc: HDC) -> i32;
+        }
+
+        let printer_wide: Vec<u16> = printer_name.encode_utf16().chain(once(0)).collect();
+        let hdc = unsafe {
+            CreateDCW(
+                PCWSTR::null(),
+                PCWSTR(printer_wide.as_ptr()),
+                PCWSTR::null(),
+                None,
+            )
+        };
+
+        if hdc.is_invalid() {
+            return Err(PdfOffError::PrintFailed(format!(
+                "Failed to create DC for printer '{}'",
+                printer_name
+            )));
+        }
+
+        let (phys_w, phys_h, off_x, off_y) = unsafe {
+            (
+                GetDeviceCaps(hdc, PHYSICALWIDTH),
+                GetDeviceCaps(hdc, PHYSICALHEIGHT),
+                GetDeviceCaps(hdc, PHYSICALOFFSETX),
+                GetDeviceCaps(hdc, PHYSICALOFFSETY),
+            )
+        };
+        let print_w = (phys_w - 2 * off_x).max(1);
+        let print_h = (phys_h - 2 * off_y).max(1);
+
+        let title_wide: Vec<u16> = doc_title.encode_utf16().chain(once(0)).collect();
+        let doc_info = DocInfoW {
+            cb_size: std::mem::size_of::<DocInfoW>() as i32,
+            psz_doc_name: title_wide.as_ptr(),
+            psz_output: std::ptr::null(),
+            psz_datatype: std::ptr::null(),
+            fw_type: 0,
+        };
+
+        let job_id = unsafe { StartDocW(hdc, &doc_info as *const _) };
+        if job_id <= 0 {
+            unsafe { DeleteDC(hdc) };
+            return Err(PdfOffError::PrintFailed("StartDoc failed".into()));
+        }
+
+        // Inline BITMAPINFO-compatible struct (header + empty color table for 24-bit)
+        #[repr(C)]
+        struct BitmapInfo {
+            header: BITMAPINFOHEADER,
+            _colors: u32,
+        }
+
+        for _copy in 0..copies {
+            for &page_idx in pages {
+                let (rgb_pixels, img_w, img_h) =
+                    renderer.render_for_print_raw(doc_manager, page_idx, dpi)?;
+
+                // RGB → BGR for Windows GDI 24-bit DIB
+                let mut bgr: Vec<u8> = Vec::with_capacity(rgb_pixels.len());
+                for px in rgb_pixels.chunks_exact(3) {
+                    bgr.push(px[2]);
+                    bgr.push(px[1]);
+                    bgr.push(px[0]);
+                }
+
+                let binfo = BitmapInfo {
+                    header: BITMAPINFOHEADER {
+                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: img_w as i32,
+                        biHeight: -(img_h as i32), // top-down
+                        biPlanes: 1,
+                        biBitCount: 24,
+                        biCompression: BI_RGB.0,
+                        biSizeImage: 0,
+                        biXPelsPerMeter: 0,
+                        biYPelsPerMeter: 0,
+                        biClrUsed: 0,
+                        biClrImportant: 0,
+                    },
+                    _colors: 0,
+                };
+
+                unsafe {
+                    StartPage(hdc);
+                    StretchDIBits(
+                        hdc,
+                        0,
+                        0,
+                        print_w,
+                        print_h,
+                        0,
+                        0,
+                        img_w as i32,
+                        img_h as i32,
+                        Some(bgr.as_ptr() as *const _),
+                        &binfo as *const _ as *const _,
+                        DIB_RGB_COLORS,
+                        SRCCOPY,
+                    );
+                    EndPage(hdc);
+                }
+            }
+        }
+
+        unsafe {
+            EndDoc(hdc);
+            DeleteDC(hdc);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    pub fn execute_print(
+        _printer_name: &str,
+        _pages: &[u32],
+        _copies: u32,
+        _doc_manager: &DocumentManager,
+        _renderer: &Renderer,
+        _dpi: f32,
+        _doc_title: &str,
+    ) -> Result<()> {
+        Err(PdfOffError::PrintFailed(
+            "Printing not supported on this platform".into(),
+        ))
     }
 }
 
