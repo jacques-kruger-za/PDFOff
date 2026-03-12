@@ -1,0 +1,39 @@
+[package]
+name = "pdfoff"
+version = "0.5.0"
+description = "PDFOff — A lightweight, fast PDF reader. Because bloatware can F off."
+authors = ["PDFOff Contributors"]
+license = "AGPL-3.0"
+repository = "https://github.com/jacques-kruger-za/PDFOff"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "pdfoff_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6" }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.10.3", features = ["protocol-asset"] }
+tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+mupdf = "0.4"
+base64 = "0.22"
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
