@@ -1,0 +1,22 @@
+{
+  "name": "pdfoff",
+  "version": "0.5.0",
+  "description": "PDFOff — A lightweight, fast PDF reader for Windows",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jacques-kruger-za/PDFOff"
+  },
+  "keywords": ["pdf", "reader", "viewer", "tauri", "rust"],
+  "author": "PDFOff Contributors",
+  "license": "AGPL-3.0",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}
