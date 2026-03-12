@@ -19,7 +19,7 @@
         "fullscreen": false,
         "center": true,
         "decorations": true,
-        "fileDropEnabled": true
+        "dragDropEnabled": true
       }
     ],
     "security": {

@@ -1,11 +1,10 @@
 use crate::document::DocumentManager;
 use crate::error::{PdfOffError, Result};
 use base64::Engine;
-use mupdf::{Colorspace, Matrix};
-use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use mupdf::{Colorspace, Matrix, pixmap::ImageFormat};
+use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::Mutex;
 
 const DEFAULT_DPI: f32 = 144.0;
 const PDF_DPI: f32 = 72.0;
@@ -49,9 +48,8 @@ impl Renderer {
             zoom_percent,
         };
 
-        // Check cache
         {
-            let cache = self.cache.lock();
+            let cache = self.cache.lock().unwrap();
             if let Some(cached) = cache.get(&cache_key) {
                 return Ok(cached.clone());
             }
@@ -66,7 +64,7 @@ impl Renderer {
             }
 
             let page = doc
-                .document
+                .doc()
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
@@ -77,8 +75,9 @@ impl Renderer {
                 .to_pixmap(&matrix, &Colorspace::device_rgb(), 1.0, true)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
-            let png_data = pixmap
-                .to_png()
+            let mut png_data = Vec::new();
+            pixmap
+                .write_to(&mut png_data, ImageFormat::PNG)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
             let base64_data = base64::engine::general_purpose::STANDARD.encode(&png_data);
@@ -86,17 +85,15 @@ impl Renderer {
             Ok(RenderedPage {
                 page_index,
                 image_data: base64_data,
-                width: pixmap.width() as u32,
-                height: pixmap.height() as u32,
+                width: pixmap.width(),
+                height: pixmap.height(),
                 zoom,
             })
         })?;
 
-        // Store in cache
         {
-            let mut cache = self.cache.lock();
+            let mut cache = self.cache.lock().unwrap();
             if cache.len() >= MAX_CACHE_ENTRIES {
-                // Simple eviction: remove entries not near current page
                 let keys_to_remove: Vec<CacheKey> = cache
                     .keys()
                     .filter(|k| {
@@ -107,7 +104,6 @@ impl Renderer {
                 for key in keys_to_remove {
                     cache.remove(&key);
                 }
-                // If still too full, clear everything
                 if cache.len() >= MAX_CACHE_ENTRIES {
                     cache.clear();
                 }
@@ -133,7 +129,7 @@ impl Renderer {
             }
 
             let page = doc
-                .document
+                .doc()
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
@@ -149,8 +145,9 @@ impl Renderer {
                 .to_pixmap(&matrix, &Colorspace::device_rgb(), 1.0, true)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
-            let png_data = pixmap
-                .to_png()
+            let mut png_data = Vec::new();
+            pixmap
+                .write_to(&mut png_data, ImageFormat::PNG)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
             let base64_data = base64::engine::general_purpose::STANDARD.encode(&png_data);
@@ -158,8 +155,8 @@ impl Renderer {
             Ok(RenderedPage {
                 page_index,
                 image_data: base64_data,
-                width: pixmap.width() as u32,
-                height: pixmap.height() as u32,
+                width: pixmap.width(),
+                height: pixmap.height(),
                 zoom: scale,
             })
         })
@@ -180,7 +177,7 @@ impl Renderer {
             }
 
             let page = doc
-                .document
+                .doc()
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
@@ -191,18 +188,20 @@ impl Renderer {
                 .to_pixmap(&matrix, &Colorspace::device_rgb(), 1.0, true)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
 
+            let mut png_data = Vec::new();
             pixmap
-                .to_png()
-                .map_err(|e| PdfOffError::RenderFailed(e.to_string()))
+                .write_to(&mut png_data, ImageFormat::PNG)
+                .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
+            Ok(png_data)
         })
     }
 
     pub fn invalidate_cache(&self) {
-        self.cache.lock().clear();
+        self.cache.lock().unwrap().clear();
     }
 
     pub fn invalidate_page(&self, page_index: u32) {
-        let mut cache = self.cache.lock();
+        let mut cache = self.cache.lock().unwrap();
         cache.retain(|k, _| k.page_index != page_index);
     }
 }

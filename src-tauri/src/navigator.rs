@@ -23,27 +23,27 @@ const MAX_ZOOM: f32 = 5.0;
 const ZOOM_STEP: f32 = 0.25;
 
 pub struct Navigator {
-    current_page: parking_lot::Mutex<u32>,
-    zoom_level: parking_lot::Mutex<f32>,
-    fit_mode: parking_lot::Mutex<FitMode>,
+    current_page: std::sync::Mutex<u32>,
+    zoom_level: std::sync::Mutex<f32>,
+    fit_mode: std::sync::Mutex<FitMode>,
 }
 
 impl Navigator {
     pub fn new() -> Self {
         Self {
-            current_page: parking_lot::Mutex::new(0),
-            zoom_level: parking_lot::Mutex::new(1.0),
-            fit_mode: parking_lot::Mutex::new(FitMode::FitWidth),
+            current_page: std::sync::Mutex::new(0),
+            zoom_level: std::sync::Mutex::new(1.0),
+            fit_mode: std::sync::Mutex::new(FitMode::FitWidth),
         }
     }
 
     pub fn get_state(&self, doc_manager: &DocumentManager) -> Result<NavigationState> {
         let total_pages = doc_manager.with_document(|doc| Ok(doc.metadata.page_count))?;
         Ok(NavigationState {
-            current_page: *self.current_page.lock(),
+            current_page: *self.current_page.lock().unwrap(),
             total_pages,
-            zoom_level: *self.zoom_level.lock(),
-            fit_mode: self.fit_mode.lock().clone(),
+            zoom_level: *self.zoom_level.lock().unwrap(),
+            fit_mode: self.fit_mode.lock().unwrap().clone(),
         })
     }
 
@@ -52,7 +52,7 @@ impl Navigator {
         if page >= total {
             return Err(PdfOffError::InvalidPage(page, total));
         }
-        *self.current_page.lock() = page;
+        *self.current_page.lock().unwrap() = page;
         doc_manager.with_document_mut(|doc| {
             doc.view_state.current_page = page;
             Ok(())
@@ -62,7 +62,7 @@ impl Navigator {
 
     pub fn next_page(&self, doc_manager: &DocumentManager) -> Result<u32> {
         let total = doc_manager.with_document(|doc| Ok(doc.metadata.page_count))?;
-        let mut current = self.current_page.lock();
+        let mut current = self.current_page.lock().unwrap();
         if *current + 1 < total {
             *current += 1;
             let page = *current;
@@ -78,7 +78,7 @@ impl Navigator {
     }
 
     pub fn prev_page(&self, doc_manager: &DocumentManager) -> Result<u32> {
-        let mut current = self.current_page.lock();
+        let mut current = self.current_page.lock().unwrap();
         if *current > 0 {
             *current -= 1;
             let page = *current;
@@ -103,47 +103,47 @@ impl Navigator {
     }
 
     pub fn zoom_in(&self) -> f32 {
-        let mut zoom = self.zoom_level.lock();
+        let mut zoom = self.zoom_level.lock().unwrap();
         *zoom = (*zoom + ZOOM_STEP).min(MAX_ZOOM);
-        *self.fit_mode.lock() = FitMode::Custom;
+        *self.fit_mode.lock().unwrap() = FitMode::Custom;
         *zoom
     }
 
     pub fn zoom_out(&self) -> f32 {
-        let mut zoom = self.zoom_level.lock();
+        let mut zoom = self.zoom_level.lock().unwrap();
         *zoom = (*zoom - ZOOM_STEP).max(MIN_ZOOM);
-        *self.fit_mode.lock() = FitMode::Custom;
+        *self.fit_mode.lock().unwrap() = FitMode::Custom;
         *zoom
     }
 
     pub fn set_zoom(&self, level: f32) -> f32 {
         let clamped = level.clamp(MIN_ZOOM, MAX_ZOOM);
-        *self.zoom_level.lock() = clamped;
-        *self.fit_mode.lock() = FitMode::Custom;
+        *self.zoom_level.lock().unwrap() = clamped;
+        *self.fit_mode.lock().unwrap() = FitMode::Custom;
         clamped
     }
 
     pub fn set_fit_mode(&self, mode: FitMode) {
-        *self.fit_mode.lock() = mode;
+        *self.fit_mode.lock().unwrap() = mode;
     }
 
     pub fn get_zoom(&self) -> f32 {
-        *self.zoom_level.lock()
+        *self.zoom_level.lock().unwrap()
     }
 
     pub fn get_current_page(&self) -> u32 {
-        *self.current_page.lock()
+        *self.current_page.lock().unwrap()
     }
 
     pub fn reset(&self) {
-        *self.current_page.lock() = 0;
-        *self.zoom_level.lock() = 1.0;
-        *self.fit_mode.lock() = FitMode::FitWidth;
+        *self.current_page.lock().unwrap() = 0;
+        *self.zoom_level.lock().unwrap() = 1.0;
+        *self.fit_mode.lock().unwrap() = FitMode::FitWidth;
     }
 
     pub fn restore_state(&self, page: u32, zoom: f32) {
-        *self.current_page.lock() = page;
-        *self.zoom_level.lock() = zoom;
+        *self.current_page.lock().unwrap() = page;
+        *self.zoom_level.lock().unwrap() = zoom;
     }
 }
 

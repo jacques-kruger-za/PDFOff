@@ -13,10 +13,10 @@ use error::PdfOffError;
 use forms::{FormField, FormFieldUpdate, FormHandler};
 use navigator::{FitMode, NavigationState, Navigator};
 use page_editor::PageEditor;
-use printer::{PageRange, PrintSettings, Printer};
+use printer::{PrintSettings, Printer};
 use renderer::{RenderedPage, Renderer};
 
-use std::sync::Arc;
+use base64::Engine;
 use tauri::State;
 
 pub struct AppState {
@@ -175,7 +175,7 @@ fn prepare_print(
         .prepare_print_data(&state.doc_manager, &state.renderer, &settings)?;
     let base64_pages: Vec<String> = data
         .iter()
-        .map(|d| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, d))
+        .map(|d| base64::engine::general_purpose::STANDARD.encode(d))
         .collect();
     Ok(base64_pages)
 }

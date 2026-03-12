@@ -46,7 +46,7 @@ impl From<mupdf::Error> for PdfOffError {
 }
 
 impl Serialize for PdfOffError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {

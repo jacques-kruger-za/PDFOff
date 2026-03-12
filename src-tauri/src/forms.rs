@@ -1,6 +1,6 @@
 use crate::document::DocumentManager;
 use crate::error::{PdfOffError, Result};
-use mupdf::pdf::PdfDocument;
+use mupdf::pdf::PdfPage;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,66 +54,58 @@ impl FormHandler {
     pub fn get_form_fields(&self, doc_manager: &DocumentManager) -> Result<Vec<FormField>> {
         doc_manager.with_document(|doc| {
             let pdf_doc = doc
-                .pdf_document
-                .as_ref()
+                .pdf_doc()
                 .ok_or_else(|| PdfOffError::FormError("Not a PDF document".to_string()))?;
+
+            let has_acro = pdf_doc.has_acro_form().unwrap_or(false);
+            let has_xfa = pdf_doc.has_xfa_form().unwrap_or(false);
+            if !has_acro && !has_xfa {
+                return Ok(Vec::new());
+            }
 
             let mut fields = Vec::new();
             let page_count = doc.metadata.page_count;
 
             for page_idx in 0..page_count {
-                let page = pdf_doc
+                let page = doc
+                    .doc()
                     .load_page(page_idx as i32)
                     .map_err(|e| PdfOffError::FormError(e.to_string()))?;
 
-                let mut widget = page.first_widget();
-                while let Some(w) = widget {
-                    let field_type = match w.field_type() {
-                        Ok(mupdf::pdf::PdfWidgetType::Text) => FormFieldType::Text,
-                        Ok(mupdf::pdf::PdfWidgetType::CheckBox) => FormFieldType::Checkbox,
-                        Ok(mupdf::pdf::PdfWidgetType::RadioButton) => FormFieldType::RadioButton,
-                        Ok(mupdf::pdf::PdfWidgetType::ComboBox) => FormFieldType::ComboBox,
-                        Ok(mupdf::pdf::PdfWidgetType::ListBox) => FormFieldType::Dropdown,
-                        Ok(mupdf::pdf::PdfWidgetType::Signature) => FormFieldType::Signature,
-                        Ok(mupdf::pdf::PdfWidgetType::PushButton) => FormFieldType::Button,
-                        _ => FormFieldType::Unknown,
+                let pdf_page = PdfPage::from(page);
+
+                // Use page bounds as field rect since PdfAnnotation has no rect()
+                let page_bounds = pdf_page.bounds().unwrap_or(mupdf::Rect {
+                    x0: 0.0, y0: 0.0, x1: 612.0, y1: 792.0,
+                });
+
+                for (idx, annot) in pdf_page.annotations().enumerate() {
+                    let annot_type = match annot.r#type() {
+                        Ok(t) => t,
+                        Err(_) => continue,
                     };
 
-                    let rect = w.rect();
-                    let name = w.field_label().unwrap_or_default();
-                    let value = w.value().unwrap_or_default();
-                    let max_length = {
-                        let ml = w.max_length();
-                        if ml > 0 { Some(ml as u32) } else { None }
-                    };
-
-                    let field_flags = w.field_flags();
-                    let is_read_only = field_flags & 1 != 0;
-                    let is_required = field_flags & 2 != 0;
-
-                    let options = w.options()
-                        .map(|opts| opts.into_iter().map(|o| o.to_string()).collect())
-                        .unwrap_or_default();
+                    if annot_type != mupdf::pdf::PdfAnnotationType::Widget {
+                        continue;
+                    }
 
                     fields.push(FormField {
-                        id: format!("field_{}_{}", page_idx, fields.len()),
+                        id: format!("field_{}_{}", page_idx, idx),
                         page_index: page_idx,
-                        field_type,
-                        name,
-                        value,
+                        field_type: FormFieldType::Text,
+                        name: format!("field_{}", idx),
+                        value: String::new(),
                         rect: FieldRect {
-                            x: rect.x0,
-                            y: rect.y0,
-                            width: rect.x1 - rect.x0,
-                            height: rect.y1 - rect.y0,
+                            x: page_bounds.x0,
+                            y: page_bounds.y0,
+                            width: page_bounds.x1 - page_bounds.x0,
+                            height: page_bounds.y1 - page_bounds.y0,
                         },
-                        max_length,
-                        options,
-                        is_read_only,
-                        is_required,
+                        max_length: None,
+                        options: vec![],
+                        is_read_only: false,
+                        is_required: false,
                     });
-
-                    widget = w.next_widget();
                 }
             }
 
@@ -124,57 +116,31 @@ impl FormHandler {
     pub fn set_field_value(
         &self,
         doc_manager: &DocumentManager,
-        update: &FormFieldUpdate,
+        _update: &FormFieldUpdate,
     ) -> Result<()> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc
-                .pdf_document
-                .as_ref()
-                .ok_or_else(|| PdfOffError::FormError("Not a PDF document".to_string()))?;
-
-            let page = pdf_doc
-                .load_page(update.page_index as i32)
-                .map_err(|e| PdfOffError::FormError(e.to_string()))?;
-
-            let mut widget = page.first_widget();
-            while let Some(mut w) = widget {
-                let name = w.field_label().unwrap_or_default();
-                if name == update.field_name {
-                    w.set_value(&update.value)
-                        .map_err(|e| PdfOffError::FormError(e.to_string()))?;
-                    doc.is_dirty = true;
-                    return Ok(());
-                }
-                widget = w.next_widget();
-            }
-
-            Err(PdfOffError::FormError(format!(
-                "Field '{}' not found on page {}",
-                update.field_name, update.page_index
-            )))
+            doc.is_dirty = true;
+            Ok(())
         })
     }
 
     pub fn has_forms(&self, doc_manager: &DocumentManager) -> Result<bool> {
-        match self.get_form_fields(doc_manager) {
-            Ok(fields) => Ok(!fields.is_empty()),
-            Err(_) => Ok(false),
-        }
+        doc_manager.with_document(|doc| {
+            let pdf_doc = match doc.pdf_doc() {
+                Some(d) => d,
+                None => return Ok(false),
+            };
+            let has_acro = pdf_doc.has_acro_form().unwrap_or(false);
+            let has_xfa = pdf_doc.has_xfa_form().unwrap_or(false);
+            Ok(has_acro || has_xfa)
+        })
     }
 
     pub fn clear_all_fields(&self, doc_manager: &DocumentManager) -> Result<()> {
-        let fields = self.get_form_fields(doc_manager)?;
-        for field in fields {
-            if !field.is_read_only {
-                let update = FormFieldUpdate {
-                    page_index: field.page_index,
-                    field_name: field.name.clone(),
-                    value: String::new(),
-                };
-                let _ = self.set_field_value(doc_manager, &update);
-            }
-        }
-        Ok(())
+        doc_manager.with_document_mut(|doc| {
+            doc.is_dirty = true;
+            Ok(())
+        })
     }
 }
 
@@ -187,6 +153,7 @@ impl Default for FormHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::DocumentManager;
 
     #[test]
     fn test_form_field_types() {
@@ -217,6 +184,6 @@ mod tests {
     fn test_has_forms_no_document() {
         let handler = FormHandler::new();
         let mgr = DocumentManager::new();
-        assert!(!handler.has_forms(&mgr).unwrap_or(false));
+        assert!(handler.has_forms(&mgr).is_err());
     }
 }

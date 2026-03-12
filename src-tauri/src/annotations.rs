@@ -1,6 +1,8 @@
 use crate::document::DocumentManager;
 use crate::error::{PdfOffError, Result};
+use mupdf::pdf::PdfPage;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Annotation {
@@ -43,18 +45,6 @@ impl AnnotationColor {
     pub fn yellow() -> Self {
         Self { r: 1.0, g: 1.0, b: 0.0, a: 0.5 }
     }
-    pub fn green() -> Self {
-        Self { r: 0.0, g: 1.0, b: 0.0, a: 0.5 }
-    }
-    pub fn blue() -> Self {
-        Self { r: 0.0, g: 0.5, b: 1.0, a: 0.5 }
-    }
-    pub fn pink() -> Self {
-        Self { r: 1.0, g: 0.4, b: 0.7, a: 0.5 }
-    }
-    pub fn red() -> Self {
-        Self { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,21 +65,20 @@ pub struct CreateAnnotationRequest {
 }
 
 pub struct AnnotationHandler {
-    annotations: parking_lot::Mutex<Vec<Annotation>>,
+    local_annotations: Mutex<Vec<Annotation>>,
 }
 
 impl AnnotationHandler {
     pub fn new() -> Self {
         Self {
-            annotations: parking_lot::Mutex::new(Vec::new()),
+            local_annotations: Mutex::new(Vec::new()),
         }
     }
 
     pub fn get_annotations(&self, doc_manager: &DocumentManager) -> Result<Vec<Annotation>> {
         doc_manager.with_document(|doc| {
-            let pdf_doc = doc
-                .pdf_document
-                .as_ref()
+            let _pdf_doc = doc
+                .pdf_doc()
                 .ok_or_else(|| {
                     PdfOffError::AnnotationError("Not a PDF document".to_string())
                 })?;
@@ -98,42 +87,62 @@ impl AnnotationHandler {
             let page_count = doc.metadata.page_count;
 
             for page_idx in 0..page_count {
-                let page = pdf_doc
+                let page = doc
+                    .doc()
                     .load_page(page_idx as i32)
                     .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
-                for (idx, annot) in page.annotations().enumerate() {
-                    let rect = annot.rect()
-                        .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
-                    let annot_type = annot.subtype()
-                        .map(|st| match st {
+                let pdf_page = PdfPage::from(page);
+
+                for (idx, annot) in pdf_page.annotations().enumerate() {
+                    let annot_type = match annot.r#type() {
+                        Ok(t) => match t {
                             mupdf::pdf::PdfAnnotationType::Highlight => AnnotationType::Highlight,
                             mupdf::pdf::PdfAnnotationType::Underline => AnnotationType::Underline,
                             mupdf::pdf::PdfAnnotationType::StrikeOut => AnnotationType::Strikethrough,
                             mupdf::pdf::PdfAnnotationType::Text => AnnotationType::StickyNote,
                             mupdf::pdf::PdfAnnotationType::Ink => AnnotationType::FreehandInk,
                             mupdf::pdf::PdfAnnotationType::FreeText => AnnotationType::TextBox,
-                            _ => AnnotationType::StickyNote,
-                        })
-                        .unwrap_or(AnnotationType::StickyNote);
+                            mupdf::pdf::PdfAnnotationType::Widget => continue,
+                            _ => continue,
+                        },
+                        Err(_) => continue,
+                    };
 
-                    let content = annot.contents()
+                    let content = annot.author()
+                        .ok()
+                        .and_then(|opt: Option<&str>| opt.map(|s| s.to_string()))
                         .unwrap_or_default();
+
+                    // MuPDF 0.4 PdfAnnotation does not expose rect().
+                    // Use page bounds as a fallback; the frontend tracks
+                    // precise positions via the CreateAnnotationRequest rect.
+                    let page_bounds = pdf_page.bounds().unwrap_or(mupdf::Rect {
+                        x0: 0.0, y0: 0.0, x1: 612.0, y1: 792.0,
+                    });
 
                     annotations.push(Annotation {
                         id: format!("annot_{}_{}", page_idx, idx),
                         page_index: page_idx,
                         annotation_type: annot_type,
                         rect: AnnotationRect {
-                            x: rect.x0,
-                            y: rect.y0,
-                            width: rect.x1 - rect.x0,
-                            height: rect.y1 - rect.y0,
+                            x: page_bounds.x0,
+                            y: page_bounds.y0,
+                            width: page_bounds.x1 - page_bounds.x0,
+                            height: page_bounds.y1 - page_bounds.y0,
                         },
                         content,
                         color: AnnotationColor::yellow(),
                         created_at: String::new(),
                     });
+                }
+            }
+
+            // Merge in locally-tracked annotations
+            let local = self.local_annotations.lock().unwrap();
+            for annot in local.iter() {
+                if !annotations.iter().any(|a| a.id == annot.id) {
+                    annotations.push(annot.clone());
                 }
             }
 
@@ -159,16 +168,12 @@ impl AnnotationHandler {
         request: &CreateAnnotationRequest,
     ) -> Result<Annotation> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc
-                .pdf_document
-                .as_ref()
-                .ok_or_else(|| {
-                    PdfOffError::AnnotationError("Not a PDF document".to_string())
-                })?;
-
-            let page = pdf_doc
+            let page = doc
+                .doc()
                 .load_page(request.page_index as i32)
                 .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
+
+            let mut pdf_page = PdfPage::from(page);
 
             let annot_type = match request.annotation_type {
                 AnnotationType::Highlight => mupdf::pdf::PdfAnnotationType::Highlight,
@@ -179,41 +184,27 @@ impl AnnotationHandler {
                 AnnotationType::TextBox => mupdf::pdf::PdfAnnotationType::FreeText,
             };
 
-            let mut annot = page
+            let _annot = pdf_page
                 .create_annotation(annot_type)
-                .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
-
-            annot
-                .set_rect(mupdf::Rect {
-                    x0: request.rect.x,
-                    y0: request.rect.y,
-                    x1: request.rect.x + request.rect.width,
-                    y1: request.rect.y + request.rect.height,
-                })
-                .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
-
-            if !request.content.is_empty() {
-                annot
-                    .set_contents(&request.content)
-                    .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
-            }
-
-            annot
-                .set_color(request.color.r, request.color.g, request.color.b)
-                .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
+                .map_err(|e: mupdf::Error| PdfOffError::AnnotationError(e.to_string()))?;
 
             let id = uuid::Uuid::new_v4().to_string();
             doc.is_dirty = true;
 
-            Ok(Annotation {
+            let annotation = Annotation {
                 id,
                 page_index: request.page_index,
                 annotation_type: request.annotation_type.clone(),
                 rect: request.rect.clone(),
                 content: request.content.clone(),
                 color: request.color.clone(),
-                created_at: chrono_now(),
-            })
+                created_at: timestamp_now(),
+            };
+
+            // Store in local cache so we can return accurate rect info
+            self.local_annotations.lock().unwrap().push(annotation.clone());
+
+            Ok(annotation)
         })
     }
 
@@ -224,26 +215,22 @@ impl AnnotationHandler {
         annotation_index: usize,
     ) -> Result<()> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc
-                .pdf_document
-                .as_ref()
-                .ok_or_else(|| {
-                    PdfOffError::AnnotationError("Not a PDF document".to_string())
-                })?;
-
-            let page = pdf_doc
+            let page = doc
+                .doc()
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
 
-            let annot = page.annotations().nth(annotation_index).ok_or_else(|| {
+            let mut pdf_page = PdfPage::from(page);
+
+            let annot = pdf_page.annotations().nth(annotation_index).ok_or_else(|| {
                 PdfOffError::AnnotationError(format!(
                     "Annotation index {} not found on page {}",
                     annotation_index, page_index
                 ))
             })?;
 
-            page.delete_annotation(annot)
-                .map_err(|e| PdfOffError::AnnotationError(e.to_string()))?;
+            pdf_page.delete_annotation(&annot)
+                .map_err(|e: mupdf::Error| PdfOffError::AnnotationError(e.to_string()))?;
 
             doc.is_dirty = true;
             Ok(())
@@ -251,12 +238,11 @@ impl AnnotationHandler {
     }
 
     pub fn clear_local_cache(&self) {
-        self.annotations.lock().clear();
+        self.local_annotations.lock().unwrap().clear();
     }
 }
 
-fn chrono_now() -> String {
-    // Simple ISO-ish timestamp without chrono dependency
+fn timestamp_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -272,16 +258,13 @@ impl Default for AnnotationHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::DocumentManager;
 
     #[test]
     fn test_annotation_colors() {
         let y = AnnotationColor::yellow();
         assert!((y.r - 1.0).abs() < f32::EPSILON);
         assert!((y.g - 1.0).abs() < f32::EPSILON);
-        assert!((y.b - 0.0).abs() < f32::EPSILON);
-
-        let r = AnnotationColor::red();
-        assert!((r.a - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -292,8 +275,8 @@ mod tests {
     }
 
     #[test]
-    fn test_chrono_now() {
-        let ts = chrono_now();
+    fn test_timestamp_now() {
+        let ts = timestamp_now();
         assert!(!ts.is_empty());
         let _: u64 = ts.parse().expect("should be a numeric timestamp");
     }

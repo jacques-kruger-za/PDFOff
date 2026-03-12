@@ -1,10 +1,9 @@
 use crate::error::{PdfOffError, Result};
-use mupdf::{Document, Matrix, Colorspace, pdf::PdfDocument};
-use parking_lot::Mutex;
+use mupdf::{Document, document::MetadataName, pdf::PdfDocument};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentMetadata {
@@ -42,13 +41,38 @@ impl Default for ViewState {
     }
 }
 
+/// Wrapper to make MuPDF Document Send + Sync.
+/// Safety: We only access MuPDF types through the Mutex in DocumentManager,
+/// ensuring no concurrent access to the underlying C library.
+struct SendDocument(Document);
+unsafe impl Send for SendDocument {}
+unsafe impl Sync for SendDocument {}
+
+struct SendPdfDocument(PdfDocument);
+unsafe impl Send for SendPdfDocument {}
+unsafe impl Sync for SendPdfDocument {}
+
 pub struct OpenDocument {
-    pub document: Document,
-    pub pdf_document: Option<PdfDocument>,
+    document: SendDocument,
+    pdf_document: Option<SendPdfDocument>,
     pub metadata: DocumentMetadata,
     pub view_state: ViewState,
     pub is_dirty: bool,
     pub file_path: PathBuf,
+}
+
+impl OpenDocument {
+    pub fn doc(&self) -> &Document {
+        &self.document.0
+    }
+
+    pub fn pdf_doc(&self) -> Option<&PdfDocument> {
+        self.pdf_document.as_ref().map(|d| &d.0)
+    }
+
+    pub fn pdf_doc_mut(&mut self) -> Option<&mut PdfDocument> {
+        self.pdf_document.as_mut().map(|d| &mut d.0)
+    }
 }
 
 pub struct DocumentManager {
@@ -80,11 +104,12 @@ impl DocumentManager {
         let document = Document::open(path)
             .map_err(|e| PdfOffError::OpenFailed(e.to_string()))?;
 
-        let page_count = document.page_count()
+        let page_count = document
+            .page_count()
             .map_err(|e| PdfOffError::OpenFailed(e.to_string()))? as u32;
 
-        let title = document.metadata("info:Title").ok().flatten();
-        let author = document.metadata("info:Author").ok().flatten();
+        let title = document.metadata(MetadataName::Title).ok();
+        let author = document.metadata(MetadataName::Author).ok();
 
         let file_name = file_path
             .file_name()
@@ -92,11 +117,11 @@ impl DocumentManager {
             .unwrap_or_else(|| "Unknown".to_string());
 
         let metadata = DocumentMetadata {
-            title: title.clone(),
+            title,
             author,
             page_count,
             file_path: path.to_string(),
-            file_name: file_name.clone(),
+            file_name,
             file_size_bytes: file_size,
         };
 
@@ -105,30 +130,32 @@ impl DocumentManager {
         let view_state = self
             .position_store
             .lock()
+            .unwrap()
             .get(path)
             .cloned()
             .unwrap_or_default();
 
         let open_doc = OpenDocument {
-            document,
-            pdf_document,
+            document: SendDocument(document),
+            pdf_document: pdf_document.map(SendPdfDocument),
             metadata: metadata.clone(),
             view_state,
             is_dirty: false,
             file_path,
         };
 
-        *self.current.lock() = Some(open_doc);
+        *self.current.lock().unwrap() = Some(open_doc);
         Ok(metadata)
     }
 
     pub fn close(&self) -> Result<()> {
-        let mut current = self.current.lock();
+        let mut current = self.current.lock().unwrap();
         if let Some(doc) = current.as_ref() {
             let path = doc.metadata.file_path.clone();
             let view_state = doc.view_state.clone();
             self.position_store
                 .lock()
+                .unwrap()
                 .insert(path, view_state);
         }
         *current = None;
@@ -139,7 +166,7 @@ impl DocumentManager {
     where
         F: FnOnce(&OpenDocument) -> Result<T>,
     {
-        let current = self.current.lock();
+        let current = self.current.lock().unwrap();
         let doc = current.as_ref().ok_or(PdfOffError::NoDocument)?;
         f(doc)
     }
@@ -148,7 +175,7 @@ impl DocumentManager {
     where
         F: FnOnce(&mut OpenDocument) -> Result<T>,
     {
-        let mut current = self.current.lock();
+        let mut current = self.current.lock().unwrap();
         let doc = current.as_mut().ok_or(PdfOffError::NoDocument)?;
         f(doc)
     }
@@ -166,7 +193,7 @@ impl DocumentManager {
                 ));
             }
             let page = doc
-                .document
+                .doc()
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
             let bounds = page
@@ -185,7 +212,7 @@ impl DocumentManager {
             let mut pages = Vec::new();
             for i in 0..doc.metadata.page_count {
                 let page = doc
-                    .document
+                    .doc()
                     .load_page(i as i32)
                     .map_err(|e| PdfOffError::RenderFailed(e.to_string()))?;
                 let bounds = page

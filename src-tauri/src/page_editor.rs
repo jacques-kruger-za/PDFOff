@@ -1,7 +1,10 @@
 use crate::document::DocumentManager;
 use crate::error::{PdfOffError, Result};
+use mupdf::pdf::PdfPage;
+use mupdf::Size;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PageOperation {
@@ -20,8 +23,8 @@ struct UndoEntry {
 }
 
 pub struct PageEditor {
-    undo_stack: parking_lot::Mutex<VecDeque<UndoEntry>>,
-    redo_stack: parking_lot::Mutex<VecDeque<UndoEntry>>,
+    undo_stack: Mutex<VecDeque<UndoEntry>>,
+    redo_stack: Mutex<VecDeque<UndoEntry>>,
 }
 
 const MAX_UNDO_ENTRIES: usize = 50;
@@ -29,17 +32,13 @@ const MAX_UNDO_ENTRIES: usize = 50;
 impl PageEditor {
     pub fn new() -> Self {
         Self {
-            undo_stack: parking_lot::Mutex::new(VecDeque::new()),
-            redo_stack: parking_lot::Mutex::new(VecDeque::new()),
+            undo_stack: Mutex::new(VecDeque::new()),
+            redo_stack: Mutex::new(VecDeque::new()),
         }
     }
 
     pub fn delete_page(&self, doc_manager: &DocumentManager, page_index: u32) -> Result<()> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
-                PdfOffError::PageEditError("Not a PDF document".to_string())
-            })?;
-
             let page_count = doc.metadata.page_count;
             if page_index >= page_count {
                 return Err(PdfOffError::InvalidPage(page_index, page_count));
@@ -49,6 +48,10 @@ impl PageEditor {
                     "Cannot delete the last page".to_string(),
                 ));
             }
+
+            let pdf_doc = doc.pdf_doc_mut().ok_or_else(|| {
+                PdfOffError::PageEditError("Not a PDF document".to_string())
+            })?;
 
             pdf_doc
                 .delete_page(page_index as i32)
@@ -79,14 +82,13 @@ impl PageEditor {
         height: f32,
     ) -> Result<()> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
+            let pdf_doc = doc.pdf_doc_mut().ok_or_else(|| {
                 PdfOffError::PageEditError("Not a PDF document".to_string())
             })?;
 
             let insert_at = (after_page + 1) as i32;
-            pdf_doc
-                .insert_page(insert_at, &mupdf::pdf::PdfPageObject::new_blank(pdf_doc, width, height)
-                    .map_err(|e| PdfOffError::PageEditError(e.to_string()))?)
+            let _new_page = pdf_doc
+                .new_page_at(insert_at, Size { width, height })
                 .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
 
             doc.metadata.page_count += 1;
@@ -126,30 +128,30 @@ impl PageEditor {
         };
 
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
-                PdfOffError::PageEditError("Not a PDF document".to_string())
-            })?;
-
             if page_index >= doc.metadata.page_count {
                 return Err(PdfOffError::InvalidPage(page_index, doc.metadata.page_count));
             }
 
-            let page = pdf_doc
+            let page = doc
+                .doc()
                 .load_page(page_index as i32)
                 .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
 
-            let current_rotation = page.rotation()
+            let mut pdf_page = PdfPage::from(page);
+
+            let current_rotation = pdf_page
+                .rotation()
                 .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
             let new_rotation = (current_rotation + valid_degrees) % 360;
 
-            page.set_rotation(new_rotation)
+            pdf_page.set_rotation(new_rotation)
                 .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
 
             doc.is_dirty = true;
             Ok(())
         })?;
 
-        let reverse_degrees = (360 - degrees % 360) % 360;
+        let reverse_degrees = (360 - valid_degrees) % 360;
         let entry = UndoEntry {
             operation: PageOperation::Rotate {
                 page_index,
@@ -171,7 +173,7 @@ impl PageEditor {
         output_path: &str,
     ) -> Result<()> {
         doc_manager.with_document(|doc| {
-            let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
+            let pdf_doc = doc.pdf_doc().ok_or_else(|| {
                 PdfOffError::PageEditError("Not a PDF document".to_string())
             })?;
 
@@ -181,20 +183,30 @@ impl PageEditor {
                 }
             }
 
-            let new_doc = mupdf::pdf::PdfDocument::new()
-                .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
+            let mut new_doc = mupdf::pdf::PdfDocument::new();
+
+            let mut graft_map = new_doc
+                .new_graft_map()
+                .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
 
             for &page_idx in pages {
-                let graft_map = mupdf::pdf::PdfGraftMap::new(&new_doc)
-                    .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
+                let page_obj = pdf_doc
+                    .find_page(page_idx as i32)
+                    .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
+                let grafted = graft_map
+                    .graft_object(&page_obj)
+                    .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
+                let page_count = new_doc
+                    .page_count()
+                    .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
                 new_doc
-                    .graft_page(new_doc.page_count().unwrap_or(0), pdf_doc, page_idx as i32, &graft_map)
-                    .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
+                    .insert_page(page_count, &grafted)
+                    .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
             }
 
             new_doc
                 .save(output_path)
-                .map_err(|e| PdfOffError::SaveFailed(e.to_string()))?;
+                .map_err(|e: mupdf::Error| PdfOffError::SaveFailed(e.to_string()))?;
 
             Ok(())
         })
@@ -207,25 +219,32 @@ impl PageEditor {
         insert_at: u32,
     ) -> Result<u32> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
-                PdfOffError::PageEditError("Not a PDF document".to_string())
-            })?;
-
             let source = mupdf::pdf::PdfDocument::open(source_path)
-                .map_err(|e| PdfOffError::OpenFailed(e.to_string()))?;
+                .map_err(|e: mupdf::Error| PdfOffError::OpenFailed(e.to_string()))?;
 
             let source_pages = source
                 .page_count()
-                .map_err(|e| PdfOffError::PageEditError(e.to_string()))? as u32;
+                .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))? as u32;
 
-            let graft_map = mupdf::pdf::PdfGraftMap::new(pdf_doc)
-                .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
+            let pdf_doc = doc.pdf_doc_mut().ok_or_else(|| {
+                PdfOffError::PageEditError("Not a PDF document".to_string())
+            })?;
+
+            let mut graft_map = pdf_doc
+                .new_graft_map()
+                .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
 
             for i in 0..source_pages {
+                let page_obj = source
+                    .find_page(i as i32)
+                    .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
+                let grafted = graft_map
+                    .graft_object(&page_obj)
+                    .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
                 let target_pos = insert_at as i32 + i as i32;
                 pdf_doc
-                    .graft_page(target_pos, &source, i as i32, &graft_map)
-                    .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
+                    .insert_page(target_pos, &grafted)
+                    .map_err(|e: mupdf::Error| PdfOffError::PageEditError(e.to_string()))?;
             }
 
             doc.metadata.page_count += source_pages;
@@ -237,15 +256,13 @@ impl PageEditor {
 
     pub fn save_document(&self, doc_manager: &DocumentManager) -> Result<()> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
+            let path = doc.file_path.to_string_lossy().to_string();
+            let pdf_doc = doc.pdf_doc().ok_or_else(|| {
                 PdfOffError::SaveFailed("Not a PDF document".to_string())
             })?;
-
-            let path = doc.file_path.to_string_lossy().to_string();
             pdf_doc
                 .save(&path)
-                .map_err(|e| PdfOffError::SaveFailed(e.to_string()))?;
-
+                .map_err(|e: mupdf::Error| PdfOffError::SaveFailed(e.to_string()))?;
             doc.is_dirty = false;
             Ok(())
         })
@@ -257,14 +274,14 @@ impl PageEditor {
         output_path: &str,
     ) -> Result<()> {
         doc_manager.with_document_mut(|doc| {
-            let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
-                PdfOffError::SaveFailed("Not a PDF document".to_string())
-            })?;
-
-            pdf_doc
-                .save(output_path)
-                .map_err(|e| PdfOffError::SaveFailed(e.to_string()))?;
-
+            {
+                let pdf_doc = doc.pdf_doc().ok_or_else(|| {
+                    PdfOffError::SaveFailed("Not a PDF document".to_string())
+                })?;
+                pdf_doc
+                    .save(output_path)
+                    .map_err(|e: mupdf::Error| PdfOffError::SaveFailed(e.to_string()))?;
+            }
             doc.file_path = std::path::PathBuf::from(output_path);
             doc.metadata.file_path = output_path.to_string();
             doc.metadata.file_name = std::path::Path::new(output_path)
@@ -277,11 +294,10 @@ impl PageEditor {
     }
 
     pub fn undo(&self, doc_manager: &DocumentManager) -> Result<bool> {
-        let entry = self.undo_stack.lock().pop_back();
+        let entry = self.undo_stack.lock().unwrap().pop_back();
         if let Some(entry) = entry {
-            // Apply the reverse operation
             self.apply_operation(doc_manager, &entry.reverse)?;
-            self.redo_stack.lock().push_back(entry);
+            self.redo_stack.lock().unwrap().push_back(entry);
             Ok(true)
         } else {
             Ok(false)
@@ -289,10 +305,10 @@ impl PageEditor {
     }
 
     pub fn redo(&self, doc_manager: &DocumentManager) -> Result<bool> {
-        let entry = self.redo_stack.lock().pop_back();
+        let entry = self.redo_stack.lock().unwrap().pop_back();
         if let Some(entry) = entry {
             self.apply_operation(doc_manager, &entry.operation)?;
-            self.undo_stack.lock().push_back(entry);
+            self.undo_stack.lock().unwrap().push_back(entry);
             Ok(true)
         } else {
             Ok(false)
@@ -300,20 +316,20 @@ impl PageEditor {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.undo_stack.lock().is_empty()
+        !self.undo_stack.lock().unwrap().is_empty()
     }
 
     pub fn can_redo(&self) -> bool {
-        !self.redo_stack.lock().is_empty()
+        !self.redo_stack.lock().unwrap().is_empty()
     }
 
     fn push_undo(&self, entry: UndoEntry) {
-        let mut stack = self.undo_stack.lock();
+        let mut stack = self.undo_stack.lock().unwrap();
         if stack.len() >= MAX_UNDO_ENTRIES {
             stack.pop_front();
         }
         stack.push_back(entry);
-        self.redo_stack.lock().clear();
+        self.redo_stack.lock().unwrap().clear();
     }
 
     fn apply_operation(
@@ -324,7 +340,7 @@ impl PageEditor {
         match operation {
             PageOperation::Delete { page_index } => {
                 doc_manager.with_document_mut(|doc| {
-                    let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
+                    let pdf_doc = doc.pdf_doc_mut().ok_or_else(|| {
                         PdfOffError::PageEditError("Not a PDF document".to_string())
                     })?;
                     pdf_doc
@@ -337,15 +353,15 @@ impl PageEditor {
             }
             PageOperation::Rotate { page_index, degrees } => {
                 doc_manager.with_document_mut(|doc| {
-                    let pdf_doc = doc.pdf_document.as_ref().ok_or_else(|| {
-                        PdfOffError::PageEditError("Not a PDF document".to_string())
-                    })?;
-                    let page = pdf_doc
+                    let page = doc
+                        .doc()
                         .load_page(*page_index as i32)
                         .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
-                    let current = page.rotation()
+                    let mut pdf_page = PdfPage::from(page);
+                    let current = pdf_page
+                        .rotation()
                         .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
-                    page.set_rotation((current + degrees) % 360)
+                    pdf_page.set_rotation((current + degrees) % 360)
                         .map_err(|e| PdfOffError::PageEditError(e.to_string()))?;
                     doc.is_dirty = true;
                     Ok(())
@@ -356,8 +372,8 @@ impl PageEditor {
     }
 
     pub fn reset(&self) {
-        self.undo_stack.lock().clear();
-        self.redo_stack.lock().clear();
+        self.undo_stack.lock().unwrap().clear();
+        self.redo_stack.lock().unwrap().clear();
     }
 }
 
@@ -370,6 +386,7 @@ impl Default for PageEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::DocumentManager;
 
     #[test]
     fn test_page_editor_creation() {
@@ -390,7 +407,6 @@ mod tests {
     fn test_rotation_validation() {
         let editor = PageEditor::new();
         let mgr = DocumentManager::new();
-        // Should fail with no document, not invalid rotation
         assert!(editor.rotate_page(&mgr, 0, 90).is_err());
     }
 
