@@ -4,10 +4,10 @@
   "version": "0.5.0",
   "identifier": "com.pdfoff.app",
   "build": {
-    "frontendDist": "../src",
-    "devUrl": "http://localhost:1420"
+    "frontendDist": "../src"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "PDFOff",
@@ -51,16 +51,6 @@
     ]
   },
   "plugins": {
-    "dialog": {
-      "open": true,
-      "save": true
-    },
-    "fs": {
-      "scope": {
-        "allow": ["**"],
-        "deny": []
-      }
-    },
     "shell": {
       "open": true
     }
