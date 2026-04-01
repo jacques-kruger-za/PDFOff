@@ -76,11 +76,20 @@ impl Msbuild {
         };
 
         let platform_toolset = env::var("MUPDF_MSVC_PLATFORM_TOOLSET").unwrap_or_else(|_| {
+            // Detect the platform toolset based on the installed VS version.
+            // cc::find_vs_version() only knows up to Vs17 (VS 2022), so newer
+            // versions fall through to the default case where we probe for them.
             match find_vs_version() {
-                Ok(VsVers::Vs17) => "v143",
-                _ => "v142",
+                Ok(VsVers::Vs17) => "v143".to_owned(),
+                _ => {
+                    // VS 2025 (v18) uses PlatformToolset "v145"
+                    if Path::new(r"C:\Program Files\Microsoft Visual Studio\18").exists() {
+                        "v145".to_owned()
+                    } else {
+                        "v142".to_owned()
+                    }
+                }
             }
-            .to_owned()
         });
 
         let Some(mut msbuild) = windows_registry::find(&target.arch, "msbuild.exe") else {
